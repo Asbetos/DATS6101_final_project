@@ -1,0 +1,150 @@
+---
+title: "Food Desert Analysis"
+author: ""
+# date: "today"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+    number_sections: false
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+```{r init, include=FALSE}
+knitr::opts_chunk$set(warning = F, results = "hide", message = F)
+options(scientific=T, digits = 3) 
+
+```
+
+
+```{r setup}
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(ggthemes)
+library(caret)
+library(randomForest)
+library(pROC)
+library(car)
+library(broom)
+library(reshape2)
+```
+
+
+```{r chunk1}
+# Load dataset
+df <- read_csv("../dataset/FoodAccessResearchAtlasData2019.csv")
+
+# Print dataset columns
+print(colnames(df))
+
+# Check unique values in 'Urban'
+unique(df$Urban)
+
+```
+
+
+
+```{r chunk2}
+df$FoodDesert <- df$LILATracts_1And10
+
+state_urban_counts <- df %>%
+  group_by(State, Urban) %>%
+  summarise(FoodDesert = sum(FoodDesert, na.rm = TRUE), .groups = 'drop')
+
+food_desert_pivot <- state_urban_counts %>%
+  pivot_wider(names_from = Urban, values_from = FoodDesert, values_fill = 0) %>%
+  rename(`Rural Food Desert Count` = `0`, `Urban Food Desert Count` = `1`) %>%
+  mutate(`Total Food Desert Count` = `Rural Food Desert Count` + `Urban Food Desert Count`) %>%
+  arrange(desc(`Total Food Desert Count`))
+
+head(food_desert_pivot, 10)
+```
+```{r chunk3}
+top_states <- head(food_desert_pivot, 10)
+
+ggplot(top_states, aes(x = reorder(State, `Total Food Desert Count`), y = `Total Food Desert Count`)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  coord_flip() +
+  labs(x = "State", y = "Total Food Desert Tract Count", title = "Top 10 States by Food Desert Concentrations") +
+  theme_minimal()
+```
+```{r chunk4}
+total_tracts_by_state <- df %>%
+  group_by(State) %>%
+  summarise(TotalTracts = n(), .groups = 'drop')
+
+food_desert_summary <- left_join(food_desert_pivot, total_tracts_by_state, by = "State") %>%
+  mutate(FoodDesertPercentage = 100 * `Total Food Desert Count` / TotalTracts)
+
+head(food_desert_summary %>%
+  select(State, `Total Food Desert Count`, TotalTracts, FoodDesertPercentage), 10)
+```
+```{r chunk5}
+atlas <- read_csv("../dataset/FoodAccessResearchAtlasData2019.csv", col_types = cols(CensusTract = col_character()))
+atlas$CensusTract <- str_pad(atlas$CensusTract, 11, pad = "0")
+atlas$CountyFIPS <- substr(atlas$CensusTract, 1, 5)
+atlas$FoodDesert <- as.integer(atlas$LILATracts_1And10)
+
+load_county_data <- function(path, fips_col = "FIPS") {
+  df <- read_csv(path)
+  df$CountyFIPS <- str_pad(as.character(df[[fips_col]]), 5, pad = "0")
+  return(df)
+}
+
+soc <- load_county_data("../dataset/FE_socioeconomic.csv")
+ins <- load_county_data("../dataset/FE_insecurity.csv")
+hlth <- load_county_data("../dataset/FE_health.csv")
+stores <- load_county_data("../dataset/FE_stores.csv")
+restaurants <- load_county_data("../dataset/FE_restaurants.csv")
+
+merged_df <- atlas %>%
+  left_join(soc %>% select(CountyFIPS, POVRATE15, MEDHHINC15, CHILDPOVRATE15, PCT_NHWHITE10, PCT_NHBLACK10, PCT_HISP10), by = "CountyFIPS") %>%
+  left_join(ins %>% select(CountyFIPS, FOODINSEC_12_14), by = "CountyFIPS") %>%
+  left_join(hlth %>% select(CountyFIPS, PCT_OBESE_ADULTS17), by = "CountyFIPS") %>%
+  left_join(stores %>% select(CountyFIPS, GROCPTH16), by = "CountyFIPS") %>%
+  left_join(restaurants %>% select(CountyFIPS, FFRPTH16), by = "CountyFIPS")
+```
+```{r chunk6}
+numeric_df <- merged_df %>% select(where(is.numeric)) %>% drop_na()
+corr_matrix <- cor(numeric_df)
+corr_with_fd <- sort(corr_matrix[,"FoodDesert"][-which(names(corr_matrix[,"FoodDesert"]) == "FoodDesert")], decreasing = TRUE)
+print(corr_with_fd[abs(corr_with_fd) > 0.4])
+```
+```{r chunk7}
+predictors <- c("LowIncomeTracts","LILATracts_Vehicle","MedianFamilyIncome","lalowihalfshare","lasnap10share","PovertyRate")
+
+model_data <- merged_df %>% select(all_of(predictors), FoodDesert) %>% drop_na()
+
+# Logistic regression
+model_logit <- glm(FoodDesert ~ ., data = model_data, family = binomial)
+summary(model_logit)
+
+# VIF
+vif_vals <- vif(model_logit)
+print(vif_vals)
+```
+```{r chunk8}
+set.seed(75)
+train_idx <- createDataPartition(model_data$FoodDesert, p = 0.7, list = FALSE)
+train_data <- model_data[train_idx,]
+test_data <- model_data[-train_idx,]
+
+rf_model <- randomForest(FoodDesert ~ ., data = train_data, ntree = 100)
+rf_probs <- predict(rf_model, newdata = test_data, type = "prob")[,2]
+
+roc_obj <- roc(test_data$FoodDesert, rf_probs)
+auc(roc_obj)
+
+rf_preds <- ifelse(rf_probs > 0.5, 1, 0)
+confusionMatrix(as.factor(rf_preds), as.factor(test_data$FoodDesert))
+
+# Variable importance
+varImpPlot(rf_model)
+```
