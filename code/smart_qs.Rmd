@@ -586,10 +586,6 @@ corrplot(cor_matrix_health, method = "color", type = "upper",
 
 
 
-```{r}
-str(model_data_sampled)
-```
-
 
 ```{r chunk7}
 selected_vars <- c(
@@ -610,7 +606,8 @@ model_data <- merged_df %>%
 # 3. Build logistic regression model
 final_formula <- as.formula(paste("FoodDesert ~", paste(selected_vars, collapse = " + ")))
 
-logit_model <- glm(final_formula, data = model_data, family = binomial())
+library(speedglm)
+logit_model <- speedglm(final_formula, data = model_data, family = binomial())
 
 # 4. Summarize model
 summary(logit_model)
