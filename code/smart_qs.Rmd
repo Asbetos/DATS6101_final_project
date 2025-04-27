@@ -61,7 +61,8 @@ df_clean <- df_fixed[, missing_pct <= 0.10]
 str(df_clean)
 ```
 
-```{r}
+```{r echo=FALSE}
+
 df_first3 <- df_clean %>% select(1:3)
 
 df_rest <- df_clean %>% select(-1:-3)
@@ -79,11 +80,9 @@ df <- bind_cols(df_first3, df_rest_clean)
 
 str(df)
 
-
 ```
 
 # SMART Q1
-
 ## Where are food deserts most geographically concentrated across the U.S., and how do these concentrations differ between urban and rural census tracts?
 
 According to the USDA definitions, a "food desert" is typically a low-income tract that also has low access to supermarkets based on established distance criteria. 
@@ -350,8 +349,6 @@ Mississippi has the highest percentage of food desert tracts, with an astonishin
 Mississppi also has the highest percentage of food desert tracts in urban areas which contribute to 42% of its total tracts.
 Arizona and alaska share the highest percentage of food desert tracts in rural areas, with 29%.
 
-
----------------------------------------------------------------------------------------------
 
 
 # SMART Q2
@@ -722,7 +719,6 @@ for (var in top10_var_names) {
 It looks like PovertyRate,Vehicle access and SNAP status are the most prominent factors
 
 
-----------------------------------------------------------------------------------------------------
 # SMART Q3
 ## How are food deserts related to health issues like obesity and diabetes?
 
@@ -772,7 +768,6 @@ corrplot(cor_matrix_health, method = "color", type = "upper",
 
 It looks like there is no significant relationship between food desert areas and health issues like obesity or diabetes. However, there is a strong correlation between obesity and diabetes, and further investigations should be done with other variables to determine their impact.
 
-------------------------------------------------------------------------
 
 # SMART Q4
 ## Can we develop a predictive model that accurately identifies high-risk areas likely to be or become food deserts based on social and economic indicators?
