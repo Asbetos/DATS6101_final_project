@@ -1,6 +1,6 @@
 ---
 title: "Food Desert Analysis"
-author: ""
+author: "Venkatesh Nagarjuna"
 # date: "today"
 date: "`r Sys.Date()`"
 output:
@@ -20,7 +20,7 @@ knitr::opts_chunk$set(warning = F, results = "hide", message = F)
 options(scientific=T, digits = 3) 
 
 ```
-
+# Setup and data loading
 
 ```{r setup}
 library(tidyverse)
@@ -38,14 +38,15 @@ library(plotly)
 library(patchwork) 
 library(tidyr)
 library(corrplot)
+library(glmnet)
+library(randomForest)
 ```
 
 
 ```{r chunk1}
-# Load dataset
+
 raw_df <- read_csv("../dataset/FoodAccessResearchAtlasData2019.csv")
 
-# Print dataset columns
 str((raw_df))
 ```
 ```{r}
@@ -53,10 +54,8 @@ str((raw_df))
 df_fixed <- raw_df %>%
   mutate(across(where(is.character), ~ na_if(., "NULL")))
 
-# Step 2: Now calculate missing value percentages
 missing_pct <- colMeans(is.na(df_fixed))
 
-# Step 3: Drop columns with more than 10% missing
 df_clean <- df_fixed[, missing_pct <= 0.10]
 
 str(df_clean)
@@ -65,35 +64,29 @@ str(df_clean)
 ```{r}
 df_first3 <- df_clean %>% select(1:3)
 
-# Step 2: Work on the rest of the columns
 df_rest <- df_clean %>% select(-1:-3)
 
-# Step 3: Identify binary columns (only two unique values: 0 and 1)
 binary_cols <- sapply(df_rest, function(x) {
   x_unique <- unique(na.omit(x))
   length(x_unique) == 2 && all(x_unique %in% c(0, 1))
 })
 
-# Step 4: Convert binary columns to factor, others to numeric
 df_rest_clean <- df_rest %>%
   mutate(across(names(binary_cols)[binary_cols], as.factor)) %>%
   mutate(across(names(binary_cols)[!binary_cols], as.numeric))
 
-# Step 5: Combine everything back
 df <- bind_cols(df_first3, df_rest_clean)
 
-# Check the structure
 str(df)
 
 
 ```
 
-**SMART Q1**
+# SMART Q1
 
-Where are food deserts most geographically concentrated across the U.S., and how do these concentrations differ between urban and rural census tracts?
------------------------------------------------------------------------------------------------------
-According to the USDA definitions, a "food desert" is typically a low-income tract 
-that also has low access to supermarkets based on established distance criteria.
+## Where are food deserts most geographically concentrated across the U.S., and how do these concentrations differ between urban and rural census tracts?
+
+According to the USDA definitions, a "food desert" is typically a low-income tract that also has low access to supermarkets based on established distance criteria. 
 Here, we use the 'LILATracts_1And10' column (which applies a 1-mile threshold for urban
 and a 10-mile threshold for rural areas) as an indicator.
 We assume that a value of 1 in 'LILATracts_1And10' indicates that the tract qualifies as a food desert.
@@ -122,7 +115,7 @@ state_totals <- df %>%
   summarise(
     TotalFoodDeserts = sum(FoodDesert, na.rm = TRUE)
   ) %>%
-  arrange(desc(TotalFoodDeserts))  # Sort descending for a nice plot
+  arrange(desc(TotalFoodDeserts))
 
 
 state_totals_top10 <- head(state_totals, 10)
@@ -142,8 +135,8 @@ ggplot(state_totals_top10, aes(x = reorder(State, TotalFoodDeserts), y = TotalFo
 
 
 
-```{r chunk3}
-# Summarize food desert percentage by state
+```{r chunk3, echo=FALSE, results='asis'}
+
 state_summary <- df %>%
   group_by(State) %>%
   summarise(
@@ -152,7 +145,6 @@ state_summary <- df %>%
     FoodDesertPercentage = 100 * TotalFoodDeserts / TotalTracts
   )
 
-# Mapping state names to abbreviations
 state_abbrev <- data.frame(
   State = state.name,
   Abbreviation = state.abb,
@@ -161,7 +153,6 @@ state_abbrev <- data.frame(
 
 state_summary <- left_join(state_summary, state_abbrev, by = "State")
 
-# Add centroids for US states
 state_centroids <- data.frame(
   Abbreviation = state.abb,
   latitude = state.center$y,
@@ -170,7 +161,6 @@ state_centroids <- data.frame(
 
 state_summary <- left_join(state_summary, state_centroids, by = "Abbreviation")
 
-# 1. Choropleth layer
 fig <- plot_ly()
 
 fig <- fig %>% add_trace(
@@ -185,7 +175,6 @@ fig <- fig %>% add_trace(
   hoverinfo = "text"
 )
 
-# 2. Add text labels properly at lat/lon
 fig <- fig %>% add_trace(
   type = 'scattergeo',
   lat = state_summary$latitude,
@@ -196,7 +185,7 @@ fig <- fig %>% add_trace(
   showlegend = FALSE
 )
 
-# 3. Layout adjustments
+
 fig <- fig %>% layout(
   title = "Percentage of Food Desert Tracts by State (2019)",
   geo = list(
@@ -207,13 +196,11 @@ fig <- fig %>% layout(
   )
 )
 
-# Show the plot
+
 fig
-
-
 ```
 
-```{r}
+```{r chunk4, echo=FALSE, results='asis'}
 state_summary <- df %>%
   group_by(State, Urban) %>%
   summarise(
@@ -232,10 +219,8 @@ state_summary <- state_summary %>%
 
 urban_summary <- filter(state_summary, Urban == 1)
 
-# Urban Map
 fig_urban <- plot_ly()
 
-# Urban Choropleth
 fig_urban <- fig_urban %>% add_trace(
   type = 'choropleth',
   locations = urban_summary$Abbreviation,
@@ -250,7 +235,6 @@ fig_urban <- fig_urban %>% add_trace(
   hoverinfo = "text"
 )
 
-# Urban text labels
 fig_urban <- fig_urban %>% add_trace(
   type = 'scattergeo',
   lat = urban_summary$latitude,
@@ -261,7 +245,6 @@ fig_urban <- fig_urban %>% add_trace(
   showlegend = FALSE
 )
 
-# Urban layout
 fig_urban <- fig_urban %>% layout(
   title = "Urban Food Desert % by US State",
   geo = list(
@@ -274,13 +257,10 @@ fig_urban <- fig_urban %>% layout(
 
 fig_urban
 
-
 rural_summary <- filter(state_summary, Urban == 0)
 
-# Rural Map
 fig_rural <- plot_ly()
 
-# Rural Choropleth
 fig_rural <- fig_rural %>% add_trace(
   type = 'choropleth',
   locations = rural_summary$Abbreviation,
@@ -295,7 +275,7 @@ fig_rural <- fig_rural %>% add_trace(
   hoverinfo = "text"
 )
 
-# Rural text labels
+
 fig_rural <- fig_rural %>% add_trace(
   type = 'scattergeo',
   lat = rural_summary$latitude,
@@ -306,7 +286,6 @@ fig_rural <- fig_rural %>% add_trace(
   showlegend = FALSE
 )
 
-# Rural layout
 fig_rural <- fig_rural %>% layout(
   title = "Rural Food Desert % by US State",
   geo = list(
@@ -325,7 +304,7 @@ fig_rural
 
 
 
-```{r chunk4}
+```{r chunk4.1}
 state_summary <- df %>%
   group_by(State, Urban) %>%
   summarise(
@@ -335,7 +314,6 @@ state_summary <- df %>%
     .groups = 'drop'
   )
 
-# Separate Urban and Rural
 urban_summary <- state_summary %>%
   filter(Urban == 1) %>%
   arrange(desc(FoodDesertPercentage))
@@ -344,7 +322,6 @@ rural_summary <- state_summary %>%
   filter(Urban == 0) %>%
   arrange(desc(FoodDesertPercentage))
 
-# 2. Create Urban Plot
 urban_plot <- ggplot(urban_summary, aes(x = reorder(State, FoodDesertPercentage), y = FoodDesertPercentage)) +
   geom_bar(stat = "identity", fill = "steelblue") +
   coord_flip() +
@@ -355,7 +332,6 @@ urban_plot <- ggplot(urban_summary, aes(x = reorder(State, FoodDesertPercentage)
   ) +
   theme_minimal(base_size = 12)
 
-# 3. Create Rural Plot
 rural_plot <- ggplot(rural_summary, aes(x = reorder(State, FoodDesertPercentage), y = FoodDesertPercentage)) +
   geom_bar(stat = "identity", fill = "seagreen") +
   coord_flip() +
@@ -366,7 +342,6 @@ rural_plot <- ggplot(rural_summary, aes(x = reorder(State, FoodDesertPercentage)
   ) +
   theme_minimal(base_size = 12)
 
-# 4. Combine side by side
 urban_plot + rural_plot + plot_layout(ncol = 2)
 ```
 
@@ -379,9 +354,11 @@ Arizona and alaska share the highest percentage of food desert tracts in rural a
 ---------------------------------------------------------------------------------------------
 
 
-**SMART Q2**
-What demographics and socioeconomic factors are linked to food deserts?
+# SMART Q2
+## What demographics and socioeconomic factors are linked to food deserts?
 
+
+### **Data Cleaning and imputation of the combined data source**
 
 ```{r chunk5}
 
@@ -397,9 +374,7 @@ access <- read_csv("../dataset/FE_access.csv")
 state_data <- read_csv("../dataset/FE_supplemental_data_state.csv")
 county_data <- read_csv("../dataset/FE_supplemental_data_county.csv")
 
-# 2. Preprocessing
 
-# Replace "NULL" strings with NA across all datasets
 clean_nulls <- function(df) {
   df %>% mutate(across(where(is.character), ~ na_if(., "NULL")))
 }
@@ -416,9 +391,7 @@ access <- clean_nulls(access)
 state_data <- clean_nulls(state_data)
 county_data <- clean_nulls(county_data)
 
-# 3. Merge datasets
 
-# Ensure all FIPS are properly padded
 foodatlas <- foodatlas %>%
   mutate(CensusTract = str_pad(CensusTract, 11, pad = "0"),
          CountyFIPS = substr(CensusTract, 1, 5))
@@ -448,17 +421,17 @@ merged_df <- foodatlas %>%
 
 merged_df$FoodDesert <- as.numeric(as.character(merged_df$LILATracts_1And10))
 
-# 3. Select numeric predictors
+
 predictor_vars <- merged_df %>%
   select(-FoodDesert) %>%
   select(where(is.numeric))    
   
 
-# 4. Drop columns with >10% missing
+# Drop columns with >10% missing
 missing_pct <- colMeans(is.na(predictor_vars))
 predictor_vars <- predictor_vars[, missing_pct <= 0.10]
 
-# 5. Impute remaining NA with medians
+# Impute remaining NA with medians
 predictor_vars <- predictor_vars %>%
   mutate(across(everything(), ~ ifelse(is.na(.), median(., na.rm = TRUE), .)))
 
@@ -470,15 +443,15 @@ is_binary <- function(x) {
 binary_cols <- names(predictor_vars)[sapply(predictor_vars, is_binary)]
 continuous_cols <- setdiff(names(predictor_vars), binary_cols)
 
-# 7. Convert binary variables to factor
+# Convert binary variables to factor
 predictor_vars <- predictor_vars %>%
   mutate(across(all_of(binary_cols), as.factor))
 
-# 8. Scale continuous variables
+# Scale continuous variables
 predictor_vars <- predictor_vars %>%
   mutate(across(all_of(continuous_cols), scale))
 
-# 6. Prepare modeling data
+# Prepare modeling data
 model_data <- bind_cols(
   FoodDesert = merged_df$FoodDesert,
   predictor_vars
@@ -493,54 +466,267 @@ str(model_data_sampled)
 
 
 
-
+### **Iterative feature selection process starts here**
 
 ```{r}
 
+predictor_vars <- model_data_sampled %>%
+  select(-c(FoodDesert,LILATracts_1And10,LILATracts_1And20,LILATracts_halfAnd10,`2010_Census_Population`)) %>% 
+  select(where(is.numeric))
+  
 
-selected_vars <- c(
-  "LowIncomeTracts",
-  "LILATracts_Vehicle",
-  "lalowihalfshare",
-  "MedianFamilyIncome",
-  "lasnap10share",
-  "PovertyRate",
-  "LA1and10",
-  "FoodDesert"
-)
+y <- model_data_sampled$FoodDesert
 
-selected_data <- merged_df %>%
-  select(all_of(selected_vars)) %>%
-  mutate(FoodDesert = as.factor(FoodDesert))
 
-selected_data_numeric <- selected_data %>%
+univariate_results <- lapply(names(predictor_vars), function(var) {
+  temp_formula <- as.formula(paste("FoodDesert ~", var))
+  model <- glm(temp_formula, data = model_data_sampled, family = binomial())
+  tidy(model) %>%
+    filter(term != "(Intercept)") %>%
+    mutate(variable = var)
+})
+
+
+univariate_df <- do.call(rbind, univariate_results)
+
+
+selected_vars_univariate <- univariate_df %>%
+  filter(p.value < 0.05) %>%
+  pull(variable)
+
+cat("Variables selected after univariate screening:", length(selected_vars_univariate), "\n")
+print(selected_vars_univariate)
+
+```
+```{r}
+
+X_lasso <- model.matrix(
+  as.formula(paste("~", paste0("`", selected_vars_univariate, "`", collapse = " + "))),
+  data = model_data_sampled
+)[, -1]  # remove intercept
+
+y_lasso <- model_data_sampled$FoodDesert
+
+# Lasso logistic regression
+set.seed(72)
+lasso_fit <- cv.glmnet(X_lasso, y_lasso, family = "binomial", alpha = 1)
+
+
+best_lambda <- lasso_fit$lambda.min
+
+
+lasso_coefs <- coef(lasso_fit, s = best_lambda)
+selected_lasso_vars <- rownames(lasso_coefs)[lasso_coefs[, 1] != 0]
+selected_lasso_vars <- selected_lasso_vars[selected_lasso_vars != "(Intercept)"]
+
+cat("Variables selected after Lasso:", length(selected_lasso_vars), "\n")
+print(selected_lasso_vars)
+
+```
+
+```{r}
+remove_high_vif_iteratively <- function(data, target = "FoodDesert", threshold = 5) {
+  
+
+  current_vars <- setdiff(names(data), target)
+  
+  repeat {
+    
+    temp_formula <- as.formula(paste(target, "~", paste0("`", current_vars, "`", collapse = " + ")))
+    
+   
+    temp_model <- glm(temp_formula, data = data, family = binomial())
+    
+    
+    vif_values <- vif(temp_model)
+    
+ 
+    if (max(vif_values, na.rm = TRUE) < threshold) {
+      break
+    }
+    
+   
+    worst_var <- names(which.max(vif_values))
+    
+    cat("Removing variable:", worst_var, "VIF =", round(max(vif_values), 2), "\n")
+    
+  
+    current_vars <- setdiff(current_vars, worst_var)
+  }
+  
+  return(current_vars)
+}
+
+model_data_reduced <- model_data_sampled %>%
+  select(all_of(c(selected_lasso_vars, "FoodDesert"))) %>%
+  drop_na()
+
+# Run VIF-based iterative filtering
+final_selected_vars <- remove_high_vif_iteratively(model_data_reduced, target = "FoodDesert", threshold = 5)
+
+
+cat("Final number of predictors:", length(final_selected_vars), "\n")
+print(final_selected_vars)
+
+```
+```{r}
+remove_high_pvalue_iteratively <- function(data, target = "FoodDesert", threshold = 0.05) {
+  
+ 
+  current_vars <- setdiff(names(data), target)
+  
+  repeat {
+   
+    temp_formula <- as.formula(paste(target, "~", paste0("`", current_vars, "`", collapse = " + ")))
+    
+    
+    temp_model <- glm(temp_formula, data = data, family = binomial())
+    
+
+    model_summary <- tidy(temp_model)
+    
+    # Remove intercept row
+    model_summary <- model_summary %>%
+      filter(term != "(Intercept)")
+    
+    # Check max p-value
+    max_pval <- max(model_summary$p.value, na.rm = TRUE)
+    
+    if (max_pval < threshold) {
+      break
+    }
+    
+   
+    worst_var <- model_summary %>%
+      filter(p.value == max_pval) %>%
+      pull(term) %>%
+      gsub("`", "", .)  # remove backticks
+    
+    cat("Removing variable:", worst_var, "p-value =", round(max_pval, 4), "\n")
+    
+   
+    current_vars <- setdiff(current_vars, worst_var)
+  }
+  
+  return(current_vars)
+}
+
+
+model_data_reduced <- model_data_sampled %>%
+  select(all_of(c(final_selected_vars, "FoodDesert"))) %>%
+  drop_na()
+
+final_significant_vars <- remove_high_pvalue_iteratively(model_data_reduced, target = "FoodDesert", threshold = 0.01)
+
+
+cat("Final number of predictors after p-value filtering:", length(final_significant_vars), "\n")
+print(final_significant_vars)
+
+
+final_formula <- as.formula(paste("FoodDesert ~", paste0("`", final_significant_vars, "`", collapse = " + ")))
+final_model <- glm(final_formula, data = model_data_reduced, family = binomial())
+
+
+
+```
+
+### **Final logit-model summary**
+```{r , echo=FALSE, results='markup'}
+# 4. Summarize final model
+summary(final_model)
+
+print("VIF values of the coefficients:")
+sort(vif(final_model))
+```
+
+
+
+### **Top 5 features by abs correlation value**
+```{r}
+final_vars_with_target <- c(final_significant_vars, "FoodDesert")
+
+
+final_data <- model_data_reduced %>%
+  select(all_of(final_vars_with_target))
+
+
+final_data_numeric <- final_data %>%
   mutate(across(everything(), ~ as.numeric(as.character(.))))
 
 
-# Calculate correlation matrix
-cor_matrix <- cor(selected_data_numeric, use = "complete.obs", method = "spearman")  # Ignore missing values safely
+cor_matrix_final <- cor(final_data_numeric, use = "complete.obs", method = "spearman")
 
 
-corrplot(cor_matrix, method = "color", type = "upper", 
-         addCoef.col = "black", tl.col = "black", tl.srt = 45)
+cor_with_target <- data.frame(
+  Variable = rownames(cor_matrix_final),
+  Correlation = cor_matrix_final[, "FoodDesert"]
+)
+
+
+cor_with_target <- cor_with_target %>%
+  filter(Variable != "FoodDesert")
+
+
+cor_with_target <- cor_with_target %>%
+  mutate(abs_correlation = abs(Correlation))
+
+
+top10_features <- cor_with_target %>%
+  arrange(desc(abs_correlation)) %>%
+  slice(1:5)
+
+top10_var_names <- top10_features$Variable
+
+
+cor_matrix_top10 <- cor_matrix_final[c(top10_var_names,"FoodDesert"), c(top10_var_names,"FoodDesert")]
+
+
+corrplot(
+  cor_matrix_top10,
+  method = "color",
+  type = "upper",
+  addCoef.col = "black",
+  tl.col = "black",
+  tl.srt = 45,
+  number.cex = 0.8,
+  tl.cex = 0.9,
+  mar = c(0,0,2,0)
+)
+
 ```
+
+
 
 ```{r}
-plots <- lapply(selected_vars[1:7], function(var) {
-  ggplot(selected_data_numeric, aes(x = FoodDesert, y = .data[[var]])) +
-    geom_boxplot(fill = "skyblue") +
-    labs(title = var, x = "Food Desert", y = var) +
-    theme_minimal(base_size = 12)
-})
 
-# Combine all plots
-wrap_plots(plots, ncol = 4) 
+boxplot_data <- merged_df %>%
+  mutate(FoodDesert = as.factor(FoodDesert)) %>% 
+  select(c(top10_var_names,"FoodDesert"))
+ 
+
+
+for (var in top10_var_names) { 
+  p <- ggplot(boxplot_data, aes(x = FoodDesert, y = .data[[var]])) +
+    geom_boxplot(fill = "green") +
+    labs(
+      title = paste("Boxplot of", var, "by Food Desert Status"),
+      x = "Food Desert (0 = No, 1 = Yes)",
+      y = var
+    ) +
+    theme_minimal(base_size = 14)
+  
+  print(p)
+}
 ```
 
-**SMART Q3**
-How are food deserts related to health issues like obesity and diabetes?
+It looks like PovertyRate,Vehicle access and SNAP status are the most prominent factors
 
 
+----------------------------------------------------------------------------------------------------
+# SMART Q3
+## How are food deserts related to health issues like obesity and diabetes?
+
+### **Select the relevant health variables**
 
 ```{r chunk6}
 health_vars <- c(
@@ -552,9 +738,9 @@ health_vars <- c(
 # 2. Subset and prepare data
 health_data <- merged_df %>%
   select(all_of(health_vars)) %>%
-  mutate(FoodDesert = as.factor(FoodDesert))  # Treat FoodDesert as factor for plotting
+  mutate(FoodDesert = as.factor(FoodDesert)) 
 
-# 3. Boxplots for each health indicator
+
 for (var in health_vars[1:2]) {  # Loop over obesity and diabetes
   p <- ggplot(health_data, aes(x = FoodDesert, y = .data[[var]])) +
     geom_boxplot(fill = "tomato") +
@@ -579,69 +765,169 @@ cor_matrix_health <- cor(health_data_numeric, use = "complete.obs", method = "sp
 
 corrplot(cor_matrix_health, method = "color", type = "upper", 
          addCoef.col = "black", tl.col = "black", tl.srt = 45)
-
-
-
 ```
 
+-----------------------------------------------------------------------------------------
 
 
+It looks like there is no significant relationship between food desert areas and health issues like obesity or diabetes. However, there is a strong correlation between obesity and diabetes, and further investigations should be done with other variables to determine their impact.
 
-```{r chunk7}
-selected_vars <- c(
-  "LowIncomeTracts",
-  "LILATracts_Vehicle",
-  "lalowihalfshare",
-  "MedianFamilyIncome",
-  "lasnap10share",
-  "PovertyRate",
-  "LA1and10"
+------------------------------------------------------------------------
+
+# SMART Q4
+## Can we develop a predictive model that accurately identifies high-risk areas likely to be or become food deserts based on social and economic indicators?
+
+
+### **Logit-model performance metrics**
+```{r chunk7, echo=FALSE, results='markup'}
+
+predicted_probs <- predict(final_model, type = "response")
+
+
+predicted_class <- ifelse(predicted_probs > 0.5, 1, 0)
+
+
+actual_class <- model_data_reduced$FoodDesert
+
+
+conf_matrix <- confusionMatrix(
+  factor(predicted_class),
+  factor(actual_class),
+  positive = "1"
 )
 
-# 2. Prepare the modeling data
-model_data <- merged_df %>%
-  select(all_of(c(selected_vars, "FoodDesert"))) %>%
-  drop_na()  # Drop rows with NA values
 
-# 3. Build logistic regression model
-final_formula <- as.formula(paste("FoodDesert ~", paste(selected_vars, collapse = " + ")))
+print(conf_matrix)
 
-library(speedglm)
-logit_model <- speedglm(final_formula, data = model_data, family = binomial())
 
-# 4. Summarize model
-summary(logit_model)
+accuracy <- conf_matrix$overall['Accuracy']
+sensitivity <- conf_matrix$byClass['Sensitivity']
+specificity <- conf_matrix$byClass['Specificity']
+precision <- conf_matrix$byClass['Precision']
+f1 <- conf_matrix$byClass['F1']
 
-# 5. Tidy output for better view
-tidy_logit <- tidy(logit_model) %>%
+cat("\n--- Model Performance Metrics ---\n")
+cat("Accuracy :", round(accuracy, 3), "\n")
+cat("Sensitivity (Recall):", round(sensitivity, 3), "\n")
+cat("Specificity:", round(specificity, 3), "\n")
+cat("Precision :", round(precision, 3), "\n")
+cat("F1 Score :", round(f1, 3), "\n")
+
+```
+
+```{r}
+
+roc_obj <- roc(actual_class, predicted_probs)
+
+# Plot ROC
+plot(roc_obj, main = "ROC Curve for Food Desert Prediction", col = "blue", lwd = 2, print.auc = TRUE)
+auc_value <- auc(roc_obj)
+
+cat("\nAUC:", round(auc_value, 3), "\n")
+
+```
+
+
+
+### **Random forest performance metrics**
+```{r chunk8, echo=FALSE, results='markup'}
+
+rf_data <- model_data_sampled %>%
+  select(all_of(final_selected_vars), FoodDesert) %>%
+  drop_na()
+
+
+rf_data$FoodDesert <- as.factor(rf_data$FoodDesert)
+
+
+set.seed(69)  
+rf_model <- randomForest(
+  FoodDesert ~ ., 
+  data = rf_data,
+  ntree = 500,          
+  mtry = floor(sqrt(length(final_selected_vars))),  
+  importance = TRUE     
+)
+
+print(rf_model)
+
+```
+
+
+```{r}
+
+
+rf_probs <- predict(rf_model, type = "prob")[,2] 
+
+rf_predicted_class <- predict(rf_model, type = "response")
+
+rf_actual_class <- rf_data$FoodDesert
+
+
+rf_conf_matrix <- confusionMatrix(rf_predicted_class, rf_actual_class, positive = "1")
+print(rf_conf_matrix)
+
+
+rf_accuracy <- rf_conf_matrix$overall['Accuracy']
+rf_sensitivity <- rf_conf_matrix$byClass['Sensitivity']
+rf_specificity <- rf_conf_matrix$byClass['Specificity']
+rf_precision <- rf_conf_matrix$byClass['Precision']
+rf_f1 <- rf_conf_matrix$byClass['F1']
+
+cat("\n--- Random Forest Performance Metrics ---\n")
+cat("Accuracy :", round(rf_accuracy, 3), "\n")
+cat("Sensitivity (Recall):", round(rf_sensitivity, 3), "\n")
+cat("Specificity:", round(rf_specificity, 3), "\n")
+cat("Precision :", round(rf_precision, 3), "\n")
+cat("F1 Score :", round(rf_f1, 3), "\n")
+
+# ROC Curve and AUC
+rf_roc_obj <- roc(rf_actual_class, rf_probs)
+
+plot(rf_roc_obj, main = "Random Forest ROC Curve", col = "darkgreen", lwd = 2, print.auc = TRUE)
+rf_auc <- auc(rf_roc_obj)
+
+cat("\nAUC:", round(rf_auc, 3), "\n")
+
+```
+
+
+```{r}
+
+rf_var_imp <- importance(rf_model)
+
+rf_var_imp_df <- data.frame(
+  Variable = rownames(rf_var_imp),
+  Importance = rf_var_imp[, "MeanDecreaseGini"]
+)
+
+rf_var_imp_df <- rf_var_imp_df %>%
   mutate(
-    odds_ratio = exp(estimate),
-    p.value = p.value
+    ImportancePct = 100 * Importance / sum(Importance)  # Convert to %
   ) %>%
-  arrange(p.value)
-
-# 6. View top results
-print(tidy_logit)
+  arrange(desc(ImportancePct))  # Sort descending
 
 
+top10_rf_var_imp_df <- rf_var_imp_df %>%
+  slice(1:10)
 
+
+ggplot(top10_rf_var_imp_df, aes(x = reorder(Variable, ImportancePct), y = ImportancePct)) +
+  geom_bar(stat = "identity", fill = "coral") +
+  geom_text(aes(label = paste0(round(ImportancePct, 1), "%")), 
+            hjust = -0.1, size = 4) +  # Add % labels outside bars
+  coord_flip() +
+  labs(
+    title = "Top 10 Feature Importances (Random Forest)",
+    x = "Variable",
+    y = "Importance (%)"
+  ) +
+  theme_minimal(base_size = 14) +
+  ylim(0, max(top10_rf_var_imp_df$ImportancePct) * 1.2)  
 
 ```
-```{r chunk8}
-set.seed(75)
-train_idx <- createDataPartition(model_data$FoodDesert, p = 0.7, list = FALSE)
-train_data <- model_data[train_idx,]
-test_data <- model_data[-train_idx,]
 
-rf_model <- randomForest(FoodDesert ~ ., data = train_data, ntree = 100)
-rf_probs <- predict(rf_model, newdata = test_data, type = "prob")[,2]
 
-roc_obj <- roc(test_data$FoodDesert, rf_probs)
-auc(roc_obj)
+The random forest performs slightly better as it captures the non-linear relationship of the variables more accurately. As for the features, PovertyRate and TractSNAP stand out which align with the correlation matrix we saw earlier. Further analysis using shapley values should be conducted to examine the full effect of these variables. Additionally, it is recommended to build multiple models on the entire feature list and then iteratively deduce the features separately instead of using the filtered features from another model. This reduces any model bias.
 
-rf_preds <- ifelse(rf_probs > 0.5, 1, 0)
-confusionMatrix(as.factor(rf_preds), as.factor(test_data$FoodDesert))
-
-# Variable importance
-varImpPlot(rf_model)
-```
+------------------------------------------------------------------------------------
