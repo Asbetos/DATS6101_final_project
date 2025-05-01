@@ -1,0 +1,702 @@
+---
+title: "Food Desert Analysis"
+author: ""
+# date: "today"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+    number_sections: false
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+```{r init, include=FALSE}
+knitr::opts_chunk$set(warning = F, results = "hide", message = F)
+options(scientific=T, digits = 3) 
+
+```
+
+
+```{r setup}
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(ggthemes)
+library(caret)
+library(randomForest)
+library(pROC)
+library(car)
+library(broom)
+library(reshape2)
+library(plotly)
+library(patchwork) 
+library(tidyr)
+library(corrplot)
+```
+# Introduction
+Background
+
+Food deserts—areas with limited access to affordable and nutritious food—are a critical public health concern in the United States. According to USDA definitions, food deserts are typically low-income census tracts where a substantial number or share of residents have low access to supermarkets or large grocery stores. Our analysis examines the geographic distribution of food deserts, their socioeconomic correlates, potential health impacts, and predictive modeling approaches to identify high-risk areas.
+
+Dataset Overview
+
+We utilized data from the USDA Food Access Research Atlas (2019), supplemented with socioeconomic, health, and food environment datasets. The combined dataset includes:
+
+    72,531 census tracts across the United States
+
+    200+ variables covering food access, demographics, socioeconomic status, and health outcomes
+
+    Key indicators of food desert status, poverty rates, vehicle access, and health statistics
+
+Key Variables:
+Variable Name	Description
+LILATracts_1And10 - 	Food desert indicator (1=mile urban/10-mile rural threshold)
+PovertyRate	 - Percentage of population below poverty line
+TractSNAP - 	Percentage of households receiving SNAP benefits
+PCT_OBESE_ADULTS17-	Percentage of obese adults
+PCT_DIABETES_ADULTS13 -	Percentage of adults with diabetes
+Urban - Urban/rural classification
+
+
+```{r chunk1}
+# Load dataset
+raw_df <- read_csv("/Users/MANOJ/Desktop/PROJECT SUMMARY/FoodAccessResearchAtlasData2019.csv")
+
+# Print dataset columns
+str((raw_df))
+```
+```{r}
+
+df_fixed <- raw_df %>%
+  mutate(across(where(is.character), ~ na_if(., "NULL")))
+
+# Step 2: Now calculate missing value percentages
+missing_pct <- colMeans(is.na(df_fixed))
+
+# Step 3: Drop columns with more than 10% missing
+df_clean <- df_fixed[, missing_pct <= 0.10]
+
+str(df_clean)
+```
+
+```{r}
+df_first3 <- df_clean %>% select(1:3)
+
+# Step 2: Work on the rest of the columns
+df_rest <- df_clean %>% select(-1:-3)
+
+# Step 3: Identify binary columns (only two unique values: 0 and 1)
+binary_cols <- sapply(df_rest, function(x) {
+  x_unique <- unique(na.omit(x))
+  length(x_unique) == 2 && all(x_unique %in% c(0, 1))
+})
+
+# Step 4: Convert binary columns to factor, others to numeric
+df_rest_clean <- df_rest %>%
+  mutate(across(names(binary_cols)[binary_cols], as.factor)) %>%
+  mutate(across(names(binary_cols)[!binary_cols], as.numeric))
+
+# Step 5: Combine everything back
+df <- bind_cols(df_first3, df_rest_clean)
+
+# Check the structure
+str(df)
+
+
+```
+
+**SMART Q1**
+
+Where are food deserts most geographically concentrated across the U.S., and how do these concentrations differ between urban and rural census tracts?
+-----------------------------------------------------------------------------------------------------
+According to the USDA definitions, a "food desert" is typically a low-income tract 
+that also has low access to supermarkets based on established distance criteria.
+Here, we use the 'LILATracts_1And10' column (which applies a 1-mile threshold for urban
+and a 10-mile threshold for rural areas) as an indicator.
+We assume that a value of 1 in 'LILATracts_1And10' indicates that the tract qualifies as a food desert.
+# Methodology
+ Used USDA-defined food desert indicator (LILATracts_1And10)
+ Analyzed state-level patterns using maps
+ Compared urban vs. rural distributions
+
+
+```{r chunk2}
+df$FoodDesert <- as.numeric(as.character(df$LILATracts_1And10))
+
+state_urban_counts <- df %>%
+  group_by(State, Urban) %>%
+  summarise(FoodDesert = sum(FoodDesert, na.rm = TRUE), .groups = 'drop')
+
+food_desert_pivot <- state_urban_counts %>%
+  pivot_wider(names_from = Urban, values_from = FoodDesert, values_fill = 0) %>%
+  rename(`Rural Food Desert Count` = `0`, `Urban Food Desert Count` = `1`) %>%
+  mutate(`Total Food Desert Count` = `Rural Food Desert Count` + `Urban Food Desert Count`) %>%
+  arrange(desc(`Total Food Desert Count`))
+
+head(food_desert_pivot, 10)
+```
+
+
+
+```{r}
+state_totals <- df %>%
+  group_by(State) %>%
+  summarise(
+    TotalFoodDeserts = sum(FoodDesert, na.rm = TRUE)
+  ) %>%
+  arrange(desc(TotalFoodDeserts))  # Sort descending for a nice plot
+
+
+state_totals_top10 <- head(state_totals, 10)
+
+ggplot(state_totals_top10, aes(x = reorder(State, TotalFoodDeserts), y = TotalFoodDeserts)) +
+  geom_bar(stat = "identity", fill = "coral") +
+  coord_flip() +
+  labs(
+    title = "Top 10 States by Number of Food Deserts",
+    x = "State",
+    y = "Number of Food Deserts"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+
+
+
+
+```{r chunk3}
+# Summarize food desert percentage by state
+state_summary <- df %>%
+  group_by(State) %>%
+  summarise(
+    TotalFoodDeserts = sum(FoodDesert, na.rm = TRUE),
+    TotalTracts = n(),
+    FoodDesertPercentage = 100 * TotalFoodDeserts / TotalTracts
+  )
+
+# Mapping state names to abbreviations
+state_abbrev <- data.frame(
+  State = state.name,
+  Abbreviation = state.abb,
+  stringsAsFactors = FALSE
+)
+
+state_summary <- left_join(state_summary, state_abbrev, by = "State")
+
+# Add centroids for US states
+state_centroids <- data.frame(
+  Abbreviation = state.abb,
+  latitude = state.center$y,
+  longitude = state.center$x
+)
+
+state_summary <- left_join(state_summary, state_centroids, by = "Abbreviation")
+
+# 1. Choropleth layer
+fig <- plot_ly()
+
+fig <- fig %>% add_trace(
+  type = 'choropleth',
+  locations = state_summary$Abbreviation,
+  locationmode = 'USA-states',
+  z = state_summary$FoodDesertPercentage,
+  colorscale = 'Reds',
+  colorbar = list(title = "Food Desert %"),
+  text = paste(state_summary$State, "<br>",
+               "Food Desert %: ", round(state_summary$FoodDesertPercentage, 1), "%"),
+  hoverinfo = "text"
+)
+
+# 2. Add text labels properly at lat/lon
+fig <- fig %>% add_trace(
+  type = 'scattergeo',
+  lat = state_summary$latitude,
+  lon = state_summary$longitude,
+  text = paste0(round(state_summary$FoodDesertPercentage), "%"),
+  mode = 'text',
+  textfont = list(color = "black", size = 9),
+  showlegend = FALSE
+)
+
+# 3. Layout adjustments
+fig <- fig %>% layout(
+  title = "Percentage of Food Desert Tracts by State (2019)",
+  geo = list(
+    scope = 'usa',
+    projection = list(type = 'albers usa'),
+    showlakes = FALSE,
+    lakecolor = 'white'
+  )
+)
+
+# Show the plot
+fig
+
+
+```
+
+```{r}
+state_summary <- df %>%
+  group_by(State, Urban) %>%
+  summarise(
+    TotalFoodDeserts = sum(FoodDesert, na.rm = TRUE),
+    TotalTracts = n(),
+    FoodDesertPercentage = 100 * TotalFoodDeserts / TotalTracts,
+    .groups = 'drop'
+  )
+
+state_abbrev <- data.frame(State = state.name, Abbreviation = state.abb, stringsAsFactors = FALSE)
+state_centroids <- data.frame(Abbreviation = state.abb, latitude = state.center$y, longitude = state.center$x)
+
+state_summary <- state_summary %>%
+  left_join(state_abbrev, by = "State") %>%
+  left_join(state_centroids, by = "Abbreviation")
+
+urban_summary <- filter(state_summary, Urban == 1)
+
+# Urban Map
+fig_urban <- plot_ly()
+
+# Urban Choropleth
+fig_urban <- fig_urban %>% add_trace(
+  type = 'choropleth',
+  locations = urban_summary$Abbreviation,
+  locationmode = 'USA-states',
+  z = urban_summary$FoodDesertPercentage,
+  colorscale = 'Blues',
+  colorbar = list(title = "Urban Food Desert %"),
+  zmin = 0,
+  zmax = max(state_summary$FoodDesertPercentage, na.rm = TRUE),
+  text = paste(urban_summary$State, "<br>",
+               "Urban Desert %: ", round(urban_summary$FoodDesertPercentage, 1), "%"),
+  hoverinfo = "text"
+)
+
+# Urban text labels
+fig_urban <- fig_urban %>% add_trace(
+  type = 'scattergeo',
+  lat = urban_summary$latitude,
+  lon = urban_summary$longitude,
+  text = paste0(round(urban_summary$FoodDesertPercentage), "%"),
+  mode = 'text',
+  textfont = list(color = "black", size = 9),
+  showlegend = FALSE
+)
+
+# Urban layout
+fig_urban <- fig_urban %>% layout(
+  title = "Urban Food Desert % by US State",
+  geo = list(
+    scope = 'usa',
+    projection = list(type = 'albers usa'),
+    showlakes = TRUE,
+    lakecolor = 'white'
+  )
+)
+
+fig_urban
+
+
+rural_summary <- filter(state_summary, Urban == 0)
+
+# Rural Map
+fig_rural <- plot_ly()
+
+# Rural Choropleth
+fig_rural <- fig_rural %>% add_trace(
+  type = 'choropleth',
+  locations = rural_summary$Abbreviation,
+  locationmode = 'USA-states',
+  z = rural_summary$FoodDesertPercentage,
+  colorscale = 'Greens',
+  colorbar = list(title = "Rural Food Desert %"),
+  zmin = 0,
+  zmax = max(state_summary$FoodDesertPercentage, na.rm = TRUE),
+  text = paste(rural_summary$State, "<br>",
+               "Rural Desert %: ", round(rural_summary$FoodDesertPercentage, 1), "%"),
+  hoverinfo = "text"
+)
+
+# Rural text labels
+fig_rural <- fig_rural %>% add_trace(
+  type = 'scattergeo',
+  lat = rural_summary$latitude,
+  lon = rural_summary$longitude,
+  text = paste0(round(rural_summary$FoodDesertPercentage), "%"),
+  mode = 'text',
+  textfont = list(color = "black", size = 9),
+  showlegend = FALSE
+)
+
+# Rural layout
+fig_rural <- fig_rural %>% layout(
+  title = "Rural Food Desert % by US State",
+  geo = list(
+    scope = 'usa',
+    projection = list(type = 'albers usa'),
+    showlakes = TRUE,
+    lakecolor = 'white'
+  )
+)
+
+fig_rural
+
+```
+
+
+
+
+
+```{r chunk4}
+state_summary <- df %>%
+  group_by(State, Urban) %>%
+  summarise(
+    TotalFoodDeserts = sum(FoodDesert, na.rm = TRUE),
+    TotalTracts = n(),
+    FoodDesertPercentage = 100 * TotalFoodDeserts / TotalTracts,
+    .groups = 'drop'
+  )
+
+# Separate Urban and Rural
+urban_summary <- state_summary %>%
+  filter(Urban == 1) %>%
+  arrange(desc(FoodDesertPercentage))
+
+rural_summary <- state_summary %>%
+  filter(Urban == 0) %>%
+  arrange(desc(FoodDesertPercentage))
+
+# 2. Create Urban Plot
+urban_plot <- ggplot(urban_summary, aes(x = reorder(State, FoodDesertPercentage), y = FoodDesertPercentage)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Urban Food Desert % by State",
+    x = "State",
+    y = "Urban Desert %"
+  ) +
+  theme_minimal(base_size = 12)
+
+# 3. Create Rural Plot
+rural_plot <- ggplot(rural_summary, aes(x = reorder(State, FoodDesertPercentage), y = FoodDesertPercentage)) +
+  geom_bar(stat = "identity", fill = "seagreen") +
+  coord_flip() +
+  labs(
+    title = "Rural Food Desert % by State",
+    x = "State",
+    y = "Rural Desert %"
+  ) +
+  theme_minimal(base_size = 12)
+
+# 4. Combine side by side
+urban_plot + rural_plot + plot_layout(ncol = 2)
+```
+
+By far Texas has the most food desert tracts, but it also has a large number of total tracts.
+Mississippi has the highest percentage of food desert tracts, with an astonishing 32% of its tracts being food deserts.
+Mississppi also has the highest percentage of food desert tracts in urban areas which contribute to 42% of its total tracts.
+Arizona and alaska share the highest percentage of food desert tracts in rural areas, with 29%.
+
+
+---------------------------------------------------------------------------------------------
+
+
+**SMART Q2**
+What demographics and socioeconomic factors are linked to food deserts?
+# Methodology
+Feature selection using univariate screening, LASSO, and VIF analysis
+Logistic regression modeling
+Correlation analysis of top predictors
+
+```{r chunk5}
+
+foodatlas <- read_csv("/Users/MANOJ/Desktop/PROJECT SUMMARY/FoodAccessResearchAtlasData2019.csv",col_types = cols(CensusTract = col_character()))
+socioeconomic <- read_csv("/Users/MANOJ/Desktop/PROJECT SUMMARY/FE_socioeconomic.csv")
+insecurity <- read_csv("/Users/MANOJ/Desktop/PROJECT SUMMARY/FE_insecurity.csv")
+health <- read_csv("/Users/MANOJ/Desktop/PROJECT SUMMARY/FE_health.csv")
+stores <- read_csv("/Users/MANOJ/Desktop/PROJECT SUMMARY/FE_stores.csv")
+restaurants <- read_csv( "/Users/MANOJ/Desktop/PROJECT SUMMARY/FE_restaurants.csv")
+taxes <- read_csv("/Users/MANOJ/Desktop/PROJECT SUMMARY/FE_taxes.csv")
+local <- read_csv("/Users/MANOJ/Desktop/PROJECT SUMMARY/FE_local.csv")
+access <- read_csv("/Users/MANOJ/Desktop/PROJECT SUMMARY/FE_access.csv")
+state_data <- read_csv("/Users/MANOJ/Desktop/PROJECT SUMMARY/FE_supplemental_data_state.csv")
+county_data <- read_csv("/Users/MANOJ/Desktop/PROJECT SUMMARY/FE_supplemental_data_county.csv")
+
+# 2. Preprocessing
+
+# Replace "NULL" strings with NA across all datasets
+clean_nulls <- function(df) {
+  df %>% mutate(across(where(is.character), ~ na_if(., "NULL")))
+}
+
+foodatlas <- clean_nulls(foodatlas)
+socioeconomic <- clean_nulls(socioeconomic)
+insecurity <- clean_nulls(insecurity)
+health <- clean_nulls(health)
+stores <- clean_nulls(stores)
+restaurants <- clean_nulls(restaurants)
+taxes <- clean_nulls(taxes)
+local <- clean_nulls(local)
+access <- clean_nulls(access)
+state_data <- clean_nulls(state_data)
+county_data <- clean_nulls(county_data)
+
+# 3. Merge datasets
+
+# Ensure all FIPS are properly padded
+foodatlas <- foodatlas %>%
+  mutate(CensusTract = str_pad(CensusTract, 11, pad = "0"),
+         CountyFIPS = substr(CensusTract, 1, 5))
+
+socioeconomic <- socioeconomic %>% mutate(CountyFIPS = str_pad(FIPS, 5, pad = "0"))
+insecurity <- insecurity %>% mutate(CountyFIPS = str_pad(FIPS, 5, pad = "0"))
+health <- health %>% mutate(CountyFIPS = str_pad(FIPS, 5, pad = "0"))
+stores <- stores %>% mutate(CountyFIPS = str_pad(FIPS, 5, pad = "0"))
+restaurants <- restaurants %>% mutate(CountyFIPS = str_pad(FIPS, 5, pad = "0"))
+taxes <- taxes %>% mutate(CountyFIPS = str_pad(FIPS, 5, pad = "0"))
+local <- local %>% mutate(CountyFIPS = str_pad(FIPS, 5, pad = "0"))
+access <- access %>% mutate(CountyFIPS = str_pad(FIPS, 5, pad = "0"))
+county_data <- county_data %>% mutate(CountyFIPS = str_pad(FIPS, 5, pad = "0"))
+
+# Merge everything into foodatlas
+merged_df <- foodatlas %>%
+  left_join(socioeconomic, by = "CountyFIPS") %>%
+  left_join(insecurity, by = "CountyFIPS") %>%
+  left_join(health, by = "CountyFIPS") %>%
+  left_join(stores, by = "CountyFIPS") %>%
+  left_join(restaurants, by = "CountyFIPS") %>%
+  left_join(taxes, by = "CountyFIPS") %>%
+  left_join(local, by = "CountyFIPS") %>%
+  left_join(access, by = "CountyFIPS") %>%
+  left_join(county_data, by = "CountyFIPS")
+
+
+merged_df$FoodDesert <- as.numeric(as.character(merged_df$LILATracts_1And10))
+
+# 3. Select numeric predictors
+predictor_vars <- merged_df %>%
+  select(-FoodDesert) %>%
+  select(where(is.numeric))    
+  
+
+# 4. Drop columns with >10% missing
+missing_pct <- colMeans(is.na(predictor_vars))
+predictor_vars <- predictor_vars[, missing_pct <= 0.10]
+
+# 5. Impute remaining NA with medians
+predictor_vars <- predictor_vars %>%
+  mutate(across(everything(), ~ ifelse(is.na(.), median(., na.rm = TRUE), .)))
+
+is_binary <- function(x) {
+  unique_vals <- unique(na.omit(x))
+  length(unique_vals) == 2 && all(sort(unique_vals) %in% c(0, 1))
+}
+
+binary_cols <- names(predictor_vars)[sapply(predictor_vars, is_binary)]
+continuous_cols <- setdiff(names(predictor_vars), binary_cols)
+
+# 7. Convert binary variables to factor
+predictor_vars <- predictor_vars %>%
+  mutate(across(all_of(binary_cols), as.factor))
+
+# 8. Scale continuous variables
+predictor_vars <- predictor_vars %>%
+  mutate(across(all_of(continuous_cols), scale))
+
+# 6. Prepare modeling data
+model_data <- bind_cols(
+  FoodDesert = merged_df$FoodDesert,
+  predictor_vars
+) %>% drop_na()
+
+set.seed(97)
+model_data_sampled <- model_data %>% sample_frac(0.3)
+
+str(model_data_sampled)
+
+```
+
+
+
+
+
+```{r}
+
+
+selected_vars <- c(
+  "LowIncomeTracts",
+  "LILATracts_Vehicle",
+  "lalowihalfshare",
+  "MedianFamilyIncome",
+  "lasnap10share",
+  "PovertyRate",
+  "LA1and10",
+  "FoodDesert"
+)
+
+selected_data <- merged_df %>%
+  select(all_of(selected_vars)) %>%
+  mutate(FoodDesert = as.factor(FoodDesert))
+
+selected_data_numeric <- selected_data %>%
+  mutate(across(everything(), ~ as.numeric(as.character(.))))
+
+
+# Calculate correlation matrix
+cor_matrix <- cor(selected_data_numeric, use = "complete.obs", method = "spearman")  # Ignore missing values safely
+
+
+corrplot(cor_matrix, method = "color", type = "upper", 
+         addCoef.col = "black", tl.col = "black", tl.srt = 45)
+```
+
+```{r}
+plots <- lapply(selected_vars[1:7], function(var) {
+  ggplot(selected_data_numeric, aes(x = FoodDesert, y = .data[[var]])) +
+    geom_boxplot(fill = "skyblue") +
+    labs(title = var, x = "Food Desert", y = var) +
+    theme_minimal(base_size = 12)
+})
+
+# Combine all plots
+wrap_plots(plots, ncol = 4) 
+```
+
+**SMART Q3**
+How are food deserts related to health issues like obesity and diabetes?
+# Methodology
+Comparative analysis of health outcomes by food desert status
+Correlation analysis using Spearman method
+Boxplot visualization of distributions
+
+
+```{r chunk6}
+health_vars <- c(
+  "PCT_OBESE_ADULTS17",   # % Obese Adults
+  "PCT_DIABETES_ADULTS13", # % Adults with Diabetes
+  "FoodDesert"
+)
+
+# 2. Subset and prepare data
+health_data <- merged_df %>%
+  select(all_of(health_vars)) %>%
+  mutate(FoodDesert = as.factor(FoodDesert))  # Treat FoodDesert as factor for plotting
+
+# 3. Boxplots for each health indicator
+for (var in health_vars[1:2]) {  # Loop over obesity and diabetes
+  p <- ggplot(health_data, aes(x = FoodDesert, y = .data[[var]])) +
+    geom_boxplot(fill = "tomato") +
+    labs(
+      title = paste("Boxplot of", var, "by Food Desert Status"),
+      x = "Food Desert (0 = No, 1 = Yes)",
+      y = var
+    ) +
+    theme_minimal(base_size = 14)
+  
+  print(p)
+}
+```
+
+
+```{r}
+health_data_numeric <- health_data %>%
+  mutate(across(everything(), ~ as.numeric(as.character(.))))
+
+# 4. Calculate the correlation matrix
+cor_matrix_health <- cor(health_data_numeric, use = "complete.obs", method = "spearman")
+
+corrplot(cor_matrix_health, method = "color", type = "upper", 
+         addCoef.col = "black", tl.col = "black", tl.srt = 45)
+
+
+
+```
+
+
+
+
+```{r chunk7}
+selected_vars <- c(
+  "LowIncomeTracts",
+  "LILATracts_Vehicle",
+  "lalowihalfshare",
+  "MedianFamilyIncome",
+  "lasnap10share",
+  "PovertyRate",
+  "LA1and10"
+)
+
+# 2. Prepare the modeling data
+model_data <- merged_df %>%
+  select(all_of(c(selected_vars, "FoodDesert"))) %>%
+  drop_na()  # Drop rows with NA values
+
+# 3. Build logistic regression model
+final_formula <- as.formula(paste("FoodDesert ~", paste(selected_vars, collapse = " + ")))
+
+library(speedglm)
+logit_model <- speedglm(final_formula, data = model_data, family = binomial())
+
+# 4. Summarize model
+summary(logit_model)
+
+# 5. Tidy output for better view
+tidy_logit <- tidy(logit_model) %>%
+  mutate(
+    odds_ratio = exp(estimate),
+    p.value = p.value
+  ) %>%
+  arrange(p.value)
+
+# 6. View top results
+print(tidy_logit)
+
+
+
+
+```
+```{r chunk8}
+set.seed(75)
+train_idx <- createDataPartition(model_data$FoodDesert, p = 0.7, list = FALSE)
+train_data <- model_data[train_idx,]
+test_data <- model_data[-train_idx,]
+
+rf_model <- randomForest(FoodDesert ~ ., data = train_data, ntree = 100)
+rf_probs <- predict(rf_model, newdata = test_data, type = "prob")[,2]
+
+roc_obj <- roc(test_data$FoodDesert, rf_probs)
+auc(roc_obj)
+
+rf_preds <- ifelse(rf_probs > 0.5, 1, 0)
+confusionMatrix(as.factor(rf_preds), as.factor(test_data$FoodDesert))
+
+# Variable importance
+varImpPlot(rf_model)
+```
+
+#Recommendations
+#Policy Implications
+Targeted Interventions: Focus resources on high-risk areas identified by models
+Transportation Solutions: Address vehicle access limitations in rural food deserts
+SNAP Optimization: Enhance program accessibility in high-poverty regions
+
+#Future Research
+
+Longitudinal study design to examine causal relationships
+Incorporate more granular health outcome data
+Explore alternative modeling approaches (e.g., XGBoost, neural networks)
+Include additional geographic and economic indicators
+
+#Conclusion
+
+Our analysis reveals that food deserts are most prevalent in Southern states and are strongly associated with poverty, limited transportation access, and SNAP participation. While no direct health impacts were identified, the developed predictive models effectively identify high-risk areas using socioeconomic indicators. These findings provide valuable insights for policymakers addressing food insecurity and can guide targeted interventions to improve food access in vulnerable communities.
+References
+
+#USDA Food Access Research Atlas (2019)
+U.S. Census Bureau American Community Survey data - https://www.ers.usda.gov/data-products/food-access-research-atlas/download-the-data
